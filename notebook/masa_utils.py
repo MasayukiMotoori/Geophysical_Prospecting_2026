@@ -211,7 +211,7 @@ class BaseSimulation:
         pass
 
 class empymod_IP_simulation(BaseSimulation):
-    AVAILABLE_MODELS = ['pelton', 'Cole','DDR','DDC','DDR_MPA']
+    AVAILABLE_MODELS = ['pelton', 'Cole','DDR','DDC','DDR_MPA', 'DDC_MPA']
     def __init__(self, model_base, nlayer, tx_height, m_depth=False,
         nD=0, nlayer_fix=0, Prj_m=None, m_fix=None,
         recw=None,resmin=1e-3 , resmax=1e6, chgmin=1e-3, chgmax=0.9,
@@ -244,7 +244,7 @@ class empymod_IP_simulation(BaseSimulation):
             self.nM_c = nlayer
         self.taus = taus
         self.ntau = len(taus) if taus is not None else None
-        self.proj_a = np.ones(self.ntau) if taus is not None else None
+        # self.proj_a = np.ones(self.ntau) if taus is not None else None
         self.nD = nD
         self.resmin = resmin
         self.resmax = resmax
@@ -323,6 +323,104 @@ class empymod_IP_simulation(BaseSimulation):
         assert self.nP == 4*(nlayer_sum)
         assert self.nM == 2*nlayer
         return Prj_m, m_fix
+
+
+    def deepsea_three_layers_bottom_fixed(self, 
+         res_sea, res_base, bool_etas=None,
+         eta_sea=0,  tau_sea=1e-3, c_sea=0.4,
+         eta_base=0, tau_base=1e-3, c_base=0.4
+         ):
+        """
+        Define mapping about three layers model consists of the following 
+        1. sea water with fixed resistivity 
+        2. target layer with IP effect with fixed thickness
+        3. non chargeable bottom layer with fixed resistivity
+        Resistivity of sea water and bottom layer is required
+        For the Cole-Cole type model
+        m[0] : resistivity or conductivity of the target layer in log
+        m[1] : chargeability of the target layer
+        m[2] : time constant of the target layer in log
+        m[3] : exponent C of the target layer
+        For the Debye Decomposition type model
+        m[0] : resistivity or conductivity of the target layer in log
+        m[1:self.ntau+1] : chargeabilities of the target layer
+        bool_etas[self.ntau] : boolean array to indicate which etas are inverted
+        """
+        self.nlayer = 1
+        nlayer_fix = 2
+        # resistivity
+        if self.ip_model in ['pelton', 'Cole']:
+            Prj_m_diag = np.diag(np.r_[
+                        0,1,0,  # resistivity 
+                        0,1,0, # chargeability
+                        0,1,0, # time constant
+                        0,1,0, # exponent C
+                        ])
+            non_zero_columns = ~np.all(Prj_m_diag == 0, axis=0)
+            Prj_m = Prj_m_diag[:, non_zero_columns]
+            if self.ip_model == 'pelton':
+                m_fix = np.r_[np.log(res_sea),0,np.log(res_base), # resistivity
+                          eta_sea,   0, eta_base, # chargeability
+                        np.log(tau_sea), 0, np.log(tau_base),# time constant
+                        c_sea, 0, c_base,# exponent C
+                        ]
+            else: # Cole-Cole
+                m_fix = np.r_[-np.log(res_sea),0, -np.log(res_base), # Conductivity
+                        eta_sea, 0, eta_base, # chargeability
+                        np.log(tau_sea), 0, np.log(tau_base),# time constant
+                        c_sea, 0, c_base,# exponent C
+                        ]
+            self.nlayer_fix = nlayer_fix
+            self.Prj_m = Prj_m
+            self.m_fix = m_fix
+            self.nP= Prj_m.shape[0]
+            self.nM= Prj_m.shape[1]
+            self.nM_r, self.nM_m, self.nM_t, self.nM_c, self.nM_d = 1,1 , 1,1 , 0
+            # the following are not used for the inversion
+            self.res_sea, self.con_sea = res_sea, 1/res_sea
+            self.eta_sea, self.tau_sea, self.c_sea = eta_sea, tau_sea, c_sea
+
+        if self.ip_model in ['DDR', 'DDR_MPA', 'DDC', 'DDC_MPA']:
+            self.nlayer_total = 3
+            if bool_etas is None:
+                bool_etas = np.full(self.ntau, True)
+            assert bool_etas.size == self.ntau
+            self.bool_etas, self.nM, self.nP = bool_etas, bool_etas.sum()+1, (self.ntau+1)*self.nlayer_total  
+            layer_bool = np.r_[True, self.bool_etas].reshape(-1,1)
+            false_column = np.full((self.ntau+1,1), False)
+            bool_mat = np.concatenate((false_column,layer_bool, false_column), axis = 1)
+
+            bool_rav= bool_mat.flatten().squeeze()
+            Prj_m = np.zeros((self.nP, self.nM))
+
+            Prj_m[bool_rav, np.arange(self.nM)] =1.0
+
+            # pattern_eta = list(np.r_[0,1,0])
+            # diag_etas = np.array(pattern_eta*self.ntau).flatten()
+            # Prj_m_diag = np.diag(np.r_[
+            #             0,1,0,  # resistivity
+            #             diag_etas, # etas
+            #             ])
+            # non_zero_columns = ~np.all(Prj_m_diag == 0, axis=0)
+            # Prj_m = Prj_m_diag[:, non_zero_columns]
+            m_fix_etas_pattern = list(np.r_[eta_sea, 0,eta_base])
+            m_fix_etas = np.repeat(m_fix_etas_pattern,self.ntau).flatten()
+
+            if self.ip_model in ['DDR', 'DDR_MPA']:
+                m_fix = np.r_[np.log(res_sea),0, np.log(res_base), # resistivity
+                            m_fix_etas, # etas
+                           ]
+   
+            if self.ip_model in ['DDC', 'DDC_MPA']:
+                m_fix = np.r_[-np.log(res_sea),0, -np.log(res_base), # Conudctivity
+                            m_fix_etas, # etas
+                            ]
+            self.nlayer_fix = nlayer_fix
+            self.Prj_m = Prj_m
+            self.m_fix = m_fix
+            self.nM_r, self.nlayer_m, self.nM_m= 1,1, bool_etas.sum()
+            self.nM_t, self.nM_c, self.nM_d = 0, 0, 0
+            self.res_sea, self.con_sea, self.eta_sea, = res_sea, 1/res_sea, eta_sea
 
     def deepsea_signle_layer(self, res_sea, res_base,
          eta_sea=0,  tau_sea=1e-3, c_sea=0.4,
@@ -513,7 +611,7 @@ class empymod_IP_simulation(BaseSimulation):
             self.res_sea, self.con_sea = res_sea, 1/res_sea
             self.eta_sea, self.tau_sea, self.c_sea = eta_sea, tau_sea, c_sea
 
-        if self.ip_model == 'DDR' or self.ip_model == 'DDR_MPA':
+        if self.ip_model in ['DDR', 'DDR_MPA']:
             pattern_eta = list(np.r_[0,np.ones(self.nlayer-1),0])
             diag_etas = np.array(pattern_eta*self.ntau).flatten()
             Prj_m_diag = np.diag(np.r_[
@@ -537,7 +635,7 @@ class empymod_IP_simulation(BaseSimulation):
             self.nM_t, self.nM_c, self.nM_d = 0, 0, self.nlayer-1
             self.res_sea, self.con_sea, self.eta_sea, = res_sea, 1/res_sea, eta_sea
  
-        if self.ip_model == 'DDC':
+        if self.ip_model in ['DDC', 'DDC_MPA']:
             pattern_eta = list(np.r_[0,np.ones(self.nlayer-1),0])
             diag_etas = np.array(pattern_eta*self.ntau).flatten()
             Prj_m_diag = np.diag(np.r_[
@@ -704,7 +802,7 @@ class empymod_IP_simulation(BaseSimulation):
 
         return etaH, etaV
 
-    def debye_sum_ser(self, inp, p_dict):
+    def ddr(self, inp, p_dict):
         assert self.taus is not None, "taus is not defined"
         assert self.ntau is not None, "ntau is not defined"
 
@@ -780,7 +878,7 @@ class empymod_IP_simulation(BaseSimulation):
         return etaH, etaV
 
 
-    def debye_sum_par(self, inp, p_dict):
+    def ddc(self, inp, p_dict):
         assert self.taus is not None, "taus is not defined"
         assert self.ntau is not None, "ntau is not defined"
 
@@ -801,6 +899,39 @@ class empymod_IP_simulation(BaseSimulation):
 
         taus = self.taus.reshape(1, 1, -1) # Shape: [1, 1, ntau]
         iwt = 1.0j * omega * taus # Shape: [nfreq, 1, ntau]
+        term = etas / (1.0 + iwt)  # shape: [nfreq, nlayer, ntau]
+
+        # Compute effective resistivity
+        # etas.sum(axis=2) has shape [1, nlayer], broadcasted to [nfreq, nlayer]
+        condH= con8 * (1.0 - term.sum(axis=2))
+        condV = condH/p_dict['aniso']**2
+
+        # Add electric permittivity contribution
+        etaH = condH + 1j*p_dict['etaH'].imag
+        etaV = condV + 1j*p_dict['etaV'].imag
+        return etaH, etaV
+
+    def ddc_mpa(self, inp, p_dict):
+        assert self.taus is not None, "taus is not defined"
+        assert self.ntau is not None, "ntau is not defined"
+
+        con8 = inp['cond_8']
+        con8 = con8.reshape(1,-1) # Shape: [1, nlayer]
+        
+        etas_list = []
+        for i in  range(self.ntau):
+            etas_list.append(inp[f'm_{i}']) 
+        etas = np.array(etas_list) # Shape: [ntau, nlayer]
+        # Reshape etas to [1, nlayer, ntau]
+        etas = etas.T[None, :, :]  # Transpose to [nlayer, ntau] → add batch dim → [1, nlayer, ntau]
+        assert self.ntau == etas.shape[2], "length of etas must be ntau"
+        sqrt = np.sqrt(1-etas)
+        # Angular frequency, reshaped to [nfreq, 1, 1]
+        omega = 2.0 * np.pi * p_dict['freq']
+        omega = omega.reshape(-1, 1, 1)
+
+        taus = self.taus.reshape(1, 1, -1) # Shape: [1, 1, ntau]
+        iwt = 1.0j * omega * taus *sqrt # Shape: [nfreq, 1, ntau]
         term = etas / (1.0 + iwt)  # shape: [nfreq, nlayer, ntau]
 
         # Compute effective resistivity
@@ -846,7 +977,10 @@ class empymod_IP_simulation(BaseSimulation):
 
         elif self.ip_model in ['DDR', 'DDR_MPA']:
             res = np.exp(param[            :   nlayer_sum])
-            res_ip = {'res': res, 'rho_0': res, 'func_eta': self.debye_sum_ser}
+            if self.ip_model == 'DDR':
+                res_ip = {'res': res, 'rho_0': res, 'func_eta': self.ddr}
+            else:
+                res_ip = {'res': res, 'rho_0': res, 'func_eta': self.ddr_mpa}
             m_list = []
             for i in range(self.ntau):
                 etai = param[(i+1)*nlayer_sum:(i+2)*nlayer_sum] 
@@ -861,9 +995,12 @@ class empymod_IP_simulation(BaseSimulation):
                 self.model_base['depth'] = depth
             return res_ip
 
-        elif self.ip_model == 'DDC':
+        elif self.ip_model in ['DDC', 'DDC_MPA']:
             con8 = np.exp(param[            :   nlayer_sum])
-            res_ip = {'cond_8': con8, 'func_eta': self.debye_sum_par}
+            if self.ip_model == 'DDC':
+                res_ip = {'cond_8': con8, 'func_eta': self.ddc}
+            else:
+                res_ip = {'cond_8': con8, 'func_eta': self.ddc_mpa}
             m_list = []
             for i in range(self.ntau):
                 etai = param[(i+1)*nlayer_sum:(i+2)*nlayer_sum] 
@@ -1072,15 +1209,16 @@ class empymod_IP_simulation(BaseSimulation):
             mvec_tmp[ index_r: index_m]=np.clip(
                 mvec[ index_r: index_m], self.chgmin, self.chgmax
                 )
-            if self.ip_model in ['DDR','DDR_MPA' ,'DDC']:
-                
-                assert (index_m - index_r) == self.ntau * self.nlayer_m, "nM_m is not multiple of ntau and nlayer sum"
-                mvec_tmp[ index_r: index_m: self.nlayer_m]= self.projection_halfspace(
-                mvec_tmp[ index_r: index_m: self.nlayer_m], self.proj_a, self.chgmax
+            if self.ip_model in ['DDR','DDR_MPA','DDC', 'DDC_MPA']:
+                mvec_tmp[ index_r: index_m]= self.projection_halfspace(
+                mvec_tmp[ index_r: index_m], np.ones(self.nM_m), self.chgmax
                 )
-                mvec_tmp[ index_r: index_m: self.nlayer_m]= self.projection_halfspace(
-                mvec_tmp[ index_r: index_m: self.nlayer_m],-self.proj_a, self.chgmin
-                )            
+                # mvec_tmp[ index_r: index_m: self.nlayer_m]= self.projection_halfspace(
+                # mvec_tmp[ index_r: index_m: self.nlayer_m], self.proj_a, self.chgmax
+                # )
+                # mvec_tmp[ index_r: index_m: self.nlayer_m]= self.projection_halfspace(
+                # mvec_tmp[ index_r: index_m: self.nlayer_m],-self.proj_a, self.chgmin
+                # )            
         if self.nM_t > 0:
             mvec_tmp[ index_m: index_t]=np.clip(
                 mvec[ index_m: index_t], np.log(self.taumin), np.log(self.taumax)
@@ -1112,7 +1250,40 @@ class empymod_IP_simulation(BaseSimulation):
             J.append((pos - neg) / (2. * delta_m))
 
         return np.vstack(J).T
-    
+
+    def activate_etas(self, WdJ, threshold_ratio=1e-6):
+        """"
+        Return a boolean array indicating which etas should be activated given the sensitivity.
+        Sensitivity is assumed as uncertainty-weighted Jacobian matrix WdJ.
+        So we recomment to call this function after data uncertainty is computed.
+        J[:,0] is the sensitivity to rho0, and J[:,1:] is the sensitivity to etas.
+        1. Get the maximum and sigin of -rho0
+        2. The time windows after the after maximum -rho0 are examined
+        3. If the sensitivity of eta at any time window is larger than rho0 then this eta is activated.
+        4. The threshold_ratio is used to avoid activating etas with very small sensitivity compared to rho0.
+        """
+        assert self.ip_model in ['DDR', 'DDR_MPA', 'DDC', 'DDC_MPA'], "activate_etas is only applicable for DD models"
+        assert WdJ.shape[1] == self.ntau +1, "The number of columns in WdJ should be equal to ntau + 1 (for rho0)"
+        if self.ip_model in ['DDR', 'DDR_MPA']:
+            con8 = -WdJ[:,0]
+        else:
+            con8 = WdJ[:,0]
+        ind = np.argmax(np.abs(con8)) # infulence and sing of con8 is the largest at this time window
+        sign_ip = -np.sign(con8[ind]) # sing of IP is estimated as the opposite of the sign of con8 sensitivity
+        threshold = threshold_ratio * np.max(np.abs(con8))
+        boole_etas = np.full(self.ntau, False)
+        eta_max = 0
+        for k in range(self.ntau):
+            etak = WdJ[:, k+1]
+            ind_eta = np.argmax(sign_ip*etak)
+            if ind_eta > ind:
+                if np.any ((etak[ind:]+con8[ind:]) *sign_ip > threshold):
+                    eta_max_tmp = etak[-1] *sign_ip
+                    if eta_max_tmp >= eta_max-eps:
+                        boole_etas[k] = True
+                        eta_max = eta_max_tmp
+        return boole_etas
+
     def J_prd(self,J):
         """"
         Retursn numpy arrays given the Jacobian matrix J in numpy format.
@@ -1175,7 +1346,7 @@ class empymod_IP_simulation(BaseSimulation):
             # Plot each model parameter
             if self.ip_model in ['pelton', 'DDR', 'DDR_MPA']:
                 self.plot_model(model["res"], ax=ax[0], label=label, **kwargs)
-                ax[0].set_xlabel(r"$\rho_0$ (ohm-m)")
+                ax[0].set_xlabel(r"$\rho_0\ (\mathrm{\Omega\,m})$")
             elif self.ip_model in ['Cole', 'DDC']:
                 self.plot_model(model["cond_8"], ax=ax[0], label=label, **kwargs)
                 ax[0].set_xlabel(r"$\sigma_\infty$ (S/m)")
@@ -1197,13 +1368,13 @@ class empymod_IP_simulation(BaseSimulation):
 
             # Convert model vector to parameters
             model = self.get_ip_model(mvec)
-            # Plot each model parameter
+            # Plot each model 
 
             self.plot_model(model["tau"], ax=ax[2], label=label, **kwargs)
 
             if self.ip_model in ['pelton']:
                 self.plot_model(model["res"], ax=ax[0], label=label, **kwargs)
-                ax[0].set_xlabel(r"$\rho_0$ (ohm-m)")
+                ax[0].set_xlabel(r"$\rho_0\ (\mathrm{\Omega m})$")
                 ax[2].set_xlabel(r"$\tau_\rho$ (sec)")
             elif self.ip_model in ['Cole']:
                 self.plot_model(model["cond_8"], ax=ax[0], label=label, **kwargs)
@@ -1231,7 +1402,7 @@ class Pelton_res_f():
         self.clim =  clim
         self.con = con
     
-    def f(self,p):
+    def f(self,p, store_p=False):
         """
         Pelton in resistivity form in frequency domain.
           `p` (`torch.Tensor`): Model parameters
@@ -1245,12 +1416,29 @@ class Pelton_res_f():
         ```
         """
         assert len(p) == 4, "Number of parameters must be 4"
+        if store_p:
+            self.store_parameters(p)
         iwc = (1j * 2. * np.pi * self.freq  ) ** p[3] 
         tc = np.exp(-p[2]*p[3])
         if self.con:
             return np.exp(-p[0])/(tc +(1.0-p[1])*iwc)*(tc+iwc)
         else:
             return np.exp( p[0])*(tc +(1.0-p[1])*iwc)/(tc+iwc)
+
+    def store_parameters(self,p):
+        """"
+        Store the parameters and derived related quantities.
+        ```math
+        \sigma_\infty =  \frac{1}{(1-\eta)\rho_0}
+        \tau_{\sigma} = (1-\eta)^{1/c}\tau_{\rho}
+        \tau_{\psi} = (1-\eta)^{0.5/c}\tau_{\rho}
+        ```
+        """
+        self.p = p
+        self.rho0, self.eta, self.tau_rho, self.c = np.exp(p[0]), p[1], np.exp(p[2]), p[3]
+        self.con8 =  1/self.rho0/(1-self.eta)
+        self.tau_con = self.tau_rho * (1-self.eta)**(1/self.c)
+        self.tau_psi = self.tau_rho * (1-self.eta)**(0.5/self.c)
 
     def f_grad(self,p):
         """
@@ -1604,8 +1792,6 @@ $$
     def mean_log_tau(self,p):
         """
         Return mean logarithmic relaxation time
-        p[0]        : log(res0)
-        p[1:1+ntaus]: etas 
         $\tau_{mean} = exp \left (\frac{\sum_{k=1}^{n}\eta_k \log{\tau_k}}{\sum_{k=1}^{n}\eta_k} \right)$
         """
         etas=p[1:1+self.ntau]
@@ -1724,7 +1910,16 @@ $$
             f= f.reshape(-1,1)  # reshape
             grad *= -f**2 # C' = (1/Z)' = -Z'/Z**2 = -Z'*C**2 
         return grad 
-
+    
+    def mean_log_tau(self,p):
+        """
+        Return mean logarithmic relaxation time
+        $\tau_{mean} = exp \left (\frac{\sum_{k=1}^{n}\eta_k \log{\tau_k}}{\sum_{k=1}^{n}\eta_k} \right)$
+        """
+        etas=p[1:1+self.ntau]
+        assert len(etas) == self.ntau, "Number of etas must match number of taus"
+        return np.exp(np.sum(etas * np.log(self.taus)) / np.sum(etas))
+    
     def clip_model(self,mvec):
         mvec_tmp = mvec.copy()
         ind_res = 0
@@ -1991,7 +2186,15 @@ $$
             f= f.reshape(-1,1)  # reshape
             grad *= -f**2 # Z' = (1/C)' = -C'/C**2 = -C'*Z**2 
         return grad 
-
+    def mean_log_tau(self,p):
+        """
+        Return mean logarithmic relaxation time
+        $\tau_{mean} = exp \left (\frac{\sum_{k=1}^{n}\eta_k \log{\tau_k}}{\sum_{k=1}^{n}\eta_k} \right)$
+        """
+        etas=p[1:1+self.ntau]
+        assert len(etas) == self.ntau, "Number of etas must match number of taus"
+        return np.exp(np.sum(etas * np.log(self.taus)) / np.sum(etas))
+    
     def clip_model(self,mvec):
         mvec_tmp = mvec.copy()
         ind_con = 0
@@ -3386,6 +3589,14 @@ class PsuedoLog:
         self.min_x = np.min(np.r_[self.min_x,np.min(x)])
         return ax
 
+    def log_tick_label(self, v):
+        if v == 0:
+            return "0"
+        else:
+            sign = "-" if v < 0 else ""
+            exp = int(np.log10(abs(v)))
+            return fr"${sign}10^{{{exp}}}$"
+
     def pl_axes(self,ax,logmin=None,linScale=None,max_y=None,min_y=None):
         assert hasattr(ax, 'set_xlim') and hasattr(ax, 'set_xticks') and hasattr(ax, 'set_xticklabels'), \
         "Provided 'ax' is not a valid Matplotlib Axes object."
@@ -3400,7 +3611,7 @@ class PsuedoLog:
             n_postick= int(np.ceil(np.log10((max_y+eps)/logmin)+1))
         posticks = linScale + np.arange(n_postick)
         #poslabels = logmin*10**np.arange(n_postick)
-        poslabels = [f"{v:.0e}" for v in (logmin * 10**np.arange(n_postick))]
+        poslabels = [self.log_tick_label(v) for v in (logmin * 10**np.arange(n_postick))]
 
         if -min_y <= logmin:
             n_negtick = 1
@@ -3410,7 +3621,7 @@ class PsuedoLog:
         negticks = -linScale - np.arange(n_negtick)
         negticks = negticks[::-1]
         #neglabels = -logmin*10**np.arange(n_negtick)
-        neglabels = [f"{v:.0e}" for v in (-logmin * 10**np.arange(n_negtick))[::-1]]
+        neglabels = [self.log_tick_label(v) for v in (-logmin * 10**np.arange(n_negtick))[::-1]]
 #        neglabels = neglabels[::-1]
 #        ticks  = np.hstack(( negticks, [0], posticks))
         ticks  = np.r_[negticks, 0, posticks]
@@ -3435,14 +3646,16 @@ class PsuedoLog:
         else:
             n_postick= int(np.ceil(np.log10(max_x/logminx)+1))
         posticks = linScalex + np.arange(n_postick)
-        poslabels = [f"{v:.0e}" for v in (logminx * 10**np.arange(n_postick))]
+        # poslabels = [f"{v:.0e}" for v in (logminx * 10**np.arange(n_postick))]
+        poslabels = [self.log_tick_label(v) for v in (logminx * 10**np.arange(n_postick))]
         if -min_x <= logminx:
             n_negtick = 1
         else:
             n_negtick = int(np.ceil(np.log10(-min_x/logminx)+1))
         negticks = -linScalex - np.arange(n_negtick)
         negticks = negticks[::-1]
-        neglabels = [f"{v:.0e}" for v in (-logminx * 10**np.arange(n_negtick))[::-1]]
+        # neglabels = [f"{v:.0e}" for v in (-logminx * 10**np.arange(n_negtick))[::-1]]
+        neglabels = [self.log_tick_label(v) for v in (-logminx * 10**np.arange(n_negtick))[::-1]]
         ticks  = np.r_[negticks, 0, posticks]
         labels = np.hstack((neglabels, [0], poslabels))
         ax.set_xlim([min(ticks), max(ticks)])
@@ -3518,17 +3731,43 @@ def mesh_Pressure_Vessel(tx_radius,cs1,ncs1, pad1max,cs2,max,lim,pad2max):
     h = np.r_[h1a,h1bc,h2a,h2b]
     return h
 
+# --- helper to render LaTeX labels (robust method) ---
+
 def sci_latex(v, prec=2):
     s = f"{v:.{prec}e}"          # e.g. '3.00e-03'
-    mant, exp = s.split('e')     # '3.00', '-03'
-    exp = int(exp)               # remove leading zeros
+    mant, exp = s.split('e')
+    exp = int(exp)
+
     if float(mant) == 0:
         return "0"
-    if exp == 0:
-        return f"{mant}"
-    if exp != 0:
-        return rf"${mant}\cdot 10^{{{exp}}}$"
 
+    if exp == 0:
+        return f"{float(mant)*10**exp:.{prec}f}"
+    else:
+        return rf"{mant}\cdot 10^{{{exp}}}"
+
+def fmt(v, prec=2, latex=False, wrap=False):
+    # blank for None or empty string
+    if v is None or v == "":
+        return ""
+
+    # if already string → return as-is
+    if isinstance(v, str):
+        return v
+
+    try:
+        s = sci_latex(v, prec=prec)
+
+        if latex:
+            if wrap:
+                return rf"$${s}$$"   # display math
+            else:
+                return rf"${s}$"     # inline math
+        else:
+            return s
+
+    except:
+        return ""
 
 def enforce_descending_x(ax):
     x0, x1 = ax.get_xlim()

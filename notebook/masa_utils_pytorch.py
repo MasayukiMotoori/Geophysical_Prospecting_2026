@@ -211,12 +211,12 @@ class DDR_f():
         display(Markdown(r"""
 ### Debye Decomposition Resistivity Model in frequency domain
 $$
-\rho(\omega)=\rho_0 \left[1-\sum_{j=1}^n \eta_j \left(1- \dfrac{1}{1+i\omega\tau_j}\right)\right]
+\rho(\omega)=\rho_0 \left[1-\sum_{k=1}^n \eta_k \left(1- \dfrac{1}{1+i\omega{\tau_{\rho k}}\right)\right]
 $$
 
 - $\rho_0$: Resistivity at low frequency ($\Omega\,$m)
-- $\eta_j$: Chargeabilities (dimensionless)  
-- $\tau_j$: Time constants (s)  
+- $\eta_k$: Chargeabilities (dimensionless)  
+- $\tau_{\rho k}$: Time constants (s)  
 - $n$: Total number of relaxation
 """))
 
@@ -307,12 +307,12 @@ class DDR_t():
 ### Debye Decomposition Resistivity Model in time domain
 
 $$
-\rho(t)=\rho_0 \left[ \left(1 -\sum_{j=1}^n \eta_j \right) \delta(t)+ \sum_{j=1}^n \dfrac{\eta_j}{\tau_j}e^{\frac{-t}{\tau_j}}\right]
+\rho(t)=\rho_0 \left[ \left(1 -\sum_{k=1}^n \eta_k \right) \delta(t)+ \sum_{k=1}^n \dfrac{\eta_k}{\tau_{\rho k}}e^{\frac{-t}{\tau_{\rho k}}}\right]
 $$
 
 - $\rho_0$: Resistivity at low frequency ($\Omega\,$m)
-- $\eta_j$: Chargeabilities (dimensionless)  
-- $\tau_j$: Time constants (s)  
+- $\eta_k$: Chargeabilities (dimensionless)  
+- $\tau_{\rho k}$: Time constants (s)  
 - $n$: Total number of relaxation
 """))
 
@@ -361,7 +361,97 @@ $$
         else:
             proj_x = x
         return proj_x
+    
+class DDR_MPA_f():
+    def __init__(self,
+            freq=None, con=False, taus=None,
+            reslim= [1e-2,1e5],
+            chglim= [0, 0.9],
+            taulim= [1e-5, 1e1],
+            taulimspc = [2,10],
+                ):
+        self.freq = TorchHelper.to_tensor_c(freq) if freq is not None else None
+        self.taus = TorchHelper.to_tensor_c(taus) if taus is not None else None
+        self.ntau = len(taus) if taus is not None else None
+        self.con = con
+        self.reslim = TorchHelper.to_tensor_r(np.log(reslim))
+        self.chglim = TorchHelper.to_tensor_r(chglim)
+        self.taulim = TorchHelper.to_tensor_r(np.log(taulim))
+        self.taulimspc = TorchHelper.to_tensor_r(np.log(taulimspc))
 
+    def show_equation(self):
+        display(Markdown(r"""
+### Debye Decomposition in resistivity form using maximum phase time constants in frequency domain
+$$
+\rho(\omega)=\rho_0 \left[1-\sum_{k=1}^n \eta_k \left(1- \dfrac{1}{1+(1-\eta_k)^{-0.5}i\omega\tau_{\psi k}}\right)\right]
+$$
+
+- $\rho_0$: Resistivity at low frequency ($\Omega\,$m)
+- $\eta_k$: Chargeabilities (dimensionless)  
+- $\tau_{\rho k}$: Time constants (s)  
+- $n$: Total number of relaxation
+"""))
+
+    def f(self, p):
+        """
+        p: torch.Tensor
+        p[0]  = log(rho0)
+        p[1:] = unconstrained chargeabilities parameters (mapped to (0,1) below)
+        """
+        device = self.freq.device
+        real_dtype = self.freq.dtype  # e.g., torch.float32 or float64
+
+        rho0 = torch.exp(p[0]).to(device=device, dtype=real_dtype)
+
+        # Start real. If upstream passed complex, take the real part (keeps autograd).
+        etas_1d = p[1:1 + self.ntau].to(device=device, dtype=real_dtype)
+        if torch.is_complex(etas_1d):
+            etas_1d = etas_1d.real
+
+
+        # If needed, map to (0,1) for stability; remove sigmoid if you already constrain etas.
+        # etas_1d = torch.sigmoid(etas_1d)
+
+        etas = etas_1d.view(1, -1)  # [1, ntau], real
+        omega = (2.0 * torch.pi * self.freq).view(-1, 1).to(device=device, dtype=real_dtype)  # [nfreq, 1]
+        taus  = self.taus.view(1, -1).to(device=device, dtype=real_dtype)                      # [1, ntau]
+
+        eps = torch.finfo(real_dtype).eps
+        inv_sqrt = torch.rsqrt((1.0 - etas).clamp_min(eps))  # real & safe: [1, ntau]
+        # (1 - η)^(-1/2) * i ω τ  ==  i ω τ / sqrt(1-η)
+        iwt = 1j * omega * taus * inv_sqrt                   # [nfreq, ntau], complex
+
+        term = etas / (1.0 + iwt)                            # [nfreq, ntau], complex
+
+        base = 1.0 - etas_1d.sum()                           # scalar (real)
+        accum = base + term.sum(dim=1)                       # [nfreq], complex
+
+        if self.con:  # conductivity
+            out = (1.0 / rho0) / accum
+        else:         # resistivity
+            out = rho0 * accum
+
+        return out.to(torch.cfloat)
+
+    def clip_model(self,mvec):
+        # Clone to avoid modifying the original tensor
+        mvec_tmp = mvec.clone().detach()
+        ind_res = 0
+        ind_chg = 1+np.arange(self.ntau)
+     
+        mvec_tmp[ind_res] = torch.clamp(mvec[ind_res], self.reslim.min(), self.reslim.max())
+        mvec_tmp[ind_chg] = torch.clamp(mvec[ind_chg], self.chglim.min(), self.chglim.max())
+        mvec_tmp[ind_chg] = self.proj_halfspace(mvec_tmp[ind_chg], torch.ones(self.ntau), self.chglim.max())
+        mvec_tmp[ind_chg] = self.proj_halfspace(mvec_tmp[ind_chg],-torch.ones(self.ntau), self.chglim.min())
+        return mvec_tmp
+
+    def proj_halfspace(self, x, a, b):
+        ax = torch.dot(a, x)
+        if ax > b:
+            proj_x = x + a * ((b - ax) / torch.dot(a, a))
+        else:
+            proj_x = x
+        return proj_x
 class Debye_Sum_Ser_t(DDR_t):
     """Alias for Debye_sum_t with a specific name."""
     pass
@@ -388,12 +478,12 @@ class DDC_f():
 ### Debye Decomposition Conductivity Model in frequency domain
 
 $$
-\sigma(\omega)=\sigma_\infty\left(1- \sum_{j=1}^n\dfrac{\eta_j}{1+i\omega\tau_j}\right)
+\sigma(\omega)=\sigma_\infty\left(1- \sum_{k=1}^n\dfrac{\eta_k}{1+i\omega\tau_{\sigma k}}\right)
 $$
 
 - $\sigma_\infty$: Conductivity at high frequency ($\Omega\,$m)                         
-- $\eta_j$: Chargeabilities (dimensionless)  
-- $\tau_j$: Time constants (s)  
+- $\eta_k$: Chargeabilities (dimensionless)  
+- $\tau_{\sigma k}$: Time constants (s)  
 - $n$: Total number of relaxation
 """))
 
@@ -460,12 +550,12 @@ class DDC_t():
 ### Debye Decomposition Conductivity Model in frequency domain
 
 $$
-\sigma(t)=\sigma_\infty \left[ \delta(t)- \sum_{j=1}^n \dfrac{\eta_j}{\tau_j}e^{\frac{-t}{\tau_j}}\right]
+\sigma(t)=\sigma_\infty \left[ \delta(t)- \sum_{k=1}^n \dfrac{\eta_k}{\tau_{\sigma k}}e^{\frac{-t}{\tau_{\sigma k}}}\right]
 $$
 
 - $\sigma_\infty$: Conductivity at high frequency ($\Omega\,$m)                         
-- $\eta_j$: Chargeabilities (dimensionless)  
-- $\tau_j$: Time constants (s)  
+- $\eta_k$: Chargeabilities (dimensionless)  
+- $\tau_{\sigma k}$: Time constants (s)  
 - $n$: Total number of relaxation
 """))
 
@@ -512,10 +602,10 @@ $$
             proj_x = x
         return proj_x
 
-class DDP_r_f():
+class DDC_MPA_f():
     def __init__(self,
-            freq=None, con=False, taus=None,
-            reslim= [1e-2,1e5],
+            freq=None, taus=None, res=False,
+            conlim= [1e-5,1e2],
             chglim= [0, 0.9],
             taulim= [1e-5, 1e1],
             taulimspc = [2,10],
@@ -523,73 +613,52 @@ class DDP_r_f():
         self.freq = TorchHelper.to_tensor_c(freq) if freq is not None else None
         self.taus = TorchHelper.to_tensor_c(taus) if taus is not None else None
         self.ntau = len(taus) if taus is not None else None
-        self.con = con
-        self.reslim = TorchHelper.to_tensor_r(np.log(reslim))
+        self.res= res
+        self.conlim = TorchHelper.to_tensor_r(np.log(conlim))
         self.chglim = TorchHelper.to_tensor_r(chglim)
         self.taulim = TorchHelper.to_tensor_r(np.log(taulim))
         self.taulimspc = TorchHelper.to_tensor_r(np.log(taulimspc))
 
     def show_equation(self):
         display(Markdown(r"""
-### Debye Decomposition using relaxation time constants of Maximum Phase in resistivity form in frequency domain
-$$
-\rho(\omega)=\rho_0 \left[1-\sum_{j=1}^n \eta_j \left(1- \dfrac{1}{1+(1-\eta_j)^{-\frac{1}{2}}i\omega\tau_j}\right)\right]
-$$
+### Debye Decomposition model in conductivity form using maximum phase time constant in frequency domain
 
-- $\rho_0$: Resistivity at low frequency ($\Omega\,$m)
-- $\eta_j$: Chargeabilities (dimensionless)  
-- $\tau_j$: Time constants (s)  
+$$
+\sigma(\omega)=\sigma_\infty\left(1- \sum_{k=1}^n\dfrac{\eta_k}{1+(1-\eta_k)^{0.5}i\omega\tau_{\psi k}}\right)
+$$
+- $\sigma_\infty$: Conductivity at high frequency ($\Omega\,$m)                         
+- $\eta_k$: Chargeabilities (dimensionless)  
+- $\tau_{\psi k}$: Time constants (s)  
 - $n$: Total number of relaxation
 """))
 
     def f(self, p):
         """
-        p: torch.Tensor
-        p[0]  = log(rho0)
-        p[1:] = unconstrained chargeabilities parameters (mapped to (0,1) below)
+        - p` (`torch.Tensor`): Model parameters in real number
+        - p[0]: log of Conductivity at high frequency 
+        - p[1:1+ntau]: chargeabilities
         """
-        device = self.freq.device
-        real_dtype = self.freq.dtype  # e.g., torch.float32 or float64
-
-        rho0 = torch.exp(p[0]).to(device=device, dtype=real_dtype)
-
-        # Start real. If upstream passed complex, take the real part (keeps autograd).
-        etas_1d = p[1:1 + self.ntau].to(device=device, dtype=real_dtype)
-        if torch.is_complex(etas_1d):
-            etas_1d = etas_1d.real
-
-
-        # If needed, map to (0,1) for stability; remove sigmoid if you already constrain etas.
-        # etas_1d = torch.sigmoid(etas_1d)
-
-        etas = etas_1d.view(1, -1)  # [1, ntau], real
-        omega = (2.0 * torch.pi * self.freq).view(-1, 1).to(device=device, dtype=real_dtype)  # [nfreq, 1]
-        taus  = self.taus.view(1, -1).to(device=device, dtype=real_dtype)                      # [1, ntau]
-
-        eps = torch.finfo(real_dtype).eps
-        inv_sqrt = torch.rsqrt((1.0 - etas).clamp_min(eps))  # real & safe: [1, ntau]
-        # (1 - η)^(-1/2) * i ω τ  ==  i ω τ / sqrt(1-η)
-        iwt = 1j * omega * taus * inv_sqrt                   # [nfreq, ntau], complex
-
-        term = etas / (1.0 + iwt)                            # [nfreq, ntau], complex
-
-        base = 1.0 - etas_1d.sum()                           # scalar (real)
-        accum = base + term.sum(dim=1)                       # [nfreq], complex
-
-        if self.con:  # conductivity
-            out = (1.0 / rho0) / accum
-        else:         # resistivity
-            out = rho0 * accum
-
-        return out.to(torch.cfloat)
+        con8 = torch.exp(p[0])
+        etas = p[1:1 + self.ntau].to(dtype=torch.cfloat)
+        omega = 2.0 * torch.pi * self.freq
+        omega = omega.view(-1, 1)  # shape: [nfreq, 1]
+        taus = self.taus.view(1, -1)  # shape: [1, ntau]
+        etas = etas.view(1, -1)  # shape: [1, ntau]
+        sqrt = torch.sqrt(1.0 - etas)  # real & safe: [1, ntau]
+        # (1 - η)^(0.5) * i ω τ  ==  i ω τ * sqrt(1-η)
+        iwt = 1.0j * omega * taus * sqrt                   # [nfreq, ntau], complex
+        term = etas / (1.0 + iwt)  # shape: [nfreq, ntau]
+        if self.res:
+            return 1.0/con8 / (1.0 - term.sum(dim=1))
+        else:
+            return con8 * (1.0 - term.sum(dim=1))  # shape: [nfreq]
 
     def clip_model(self,mvec):
         # Clone to avoid modifying the original tensor
         mvec_tmp = mvec.clone().detach()
-        ind_res = 0
+        ind_con = 0
         ind_chg = 1+np.arange(self.ntau)
-     
-        mvec_tmp[ind_res] = torch.clamp(mvec[ind_res], self.reslim.min(), self.reslim.max())
+        mvec_tmp[ind_con] = torch.clamp(mvec[ind_con], self.conlim.min(), self.conlim.max())
         mvec_tmp[ind_chg] = torch.clamp(mvec[ind_chg], self.chglim.min(), self.chglim.max())
         mvec_tmp[ind_chg] = self.proj_halfspace(mvec_tmp[ind_chg], torch.ones(self.ntau), self.chglim.max())
         mvec_tmp[ind_chg] = self.proj_halfspace(mvec_tmp[ind_chg],-torch.ones(self.ntau), self.chglim.min())
@@ -707,7 +776,7 @@ class BaseSimulation:
         pass
 
 class InducedPolarizationSimulation(BaseSimulation):
-    AVAILABLE_MODES = ['tdip_t', 'tdip_f', 'sip_t', 'sip']
+    AVAILABLE_MODES = ['tdip_t', 'tdip_f', 'sip_t', 'sip', 'sip_ap']
 
     eps = torch.finfo(torch.float32).eps
     def __init__(self, 
@@ -958,10 +1027,13 @@ class InducedPolarizationSimulation(BaseSimulation):
             t_real = t.real
             return self.window_mat@t_real
         
-        if self.mode=="sip":
+        if self.mode in ["sip", 'sip_ap']:
             f = self.ip_model.f(m)
             f_real = f.real
             f_imag = f.imag
+            if self.mode == 'sip_ap':
+                f_real = torch.abs(f)
+                f_imag = torch.angle(f)
             if self.window_mat is None:
                 return torch.cat([f_real, f_imag])
             else:
