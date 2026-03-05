@@ -1,0 +1,41 @@
+# Figure export
+figure.dpi: 150        # interactive
+savefig.dpi: 600         # export
+savefig.bbox: tight
+savefig.pad_inches: 0.01
+
+# Fonts
+font.size: 6
+figure.titlesize: 6
+axes.titlesize: 6
+axes.labelsize: 6
+legend.fontsize: 6
+xtick.labelsize: 6
+ytick.labelsize: 6
+
+# Layout
+figure.constrained_layout.use: True
+figure.constrained_layout.h_pad: 0.01
+figure.constrained_layout.w_pad: 0.01
+figure.constrained_layout.hspace: 0.10
+figure.constrained_layout.wspace: 0.02
+# Lines
+lines.linewidth: 1.0
+lines.markersize: 1.0
+
+# Axes / grid
+axes.grid: True
+grid.alpha: 1.0
+
+# Legend
+legend.frameon: False
+
+# Ticks
+xtick.direction: in
+ytick.direction: in
+
+# font
+text.usetex: True
+font.family: sans-serif
+font.sans-serif: Lato
+text.latex.preamble: \usepackage[default]{lato}

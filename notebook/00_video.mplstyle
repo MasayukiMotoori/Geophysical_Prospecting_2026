@@ -1,0 +1,53 @@
+# =========================
+# Canvas (16:9 Full HD)
+# =========================
+figure.figsize: 12.8, 7.2
+figure.dpi: 150
+savefig.dpi: 150
+figure.facecolor: white
+savefig.facecolor: white
+savefig.bbox: tight
+savefig.pad_inches: 0.05
+
+# =========================
+# Fonts (Readable in room)
+# =========================
+font.size: 14
+axes.titlesize: 16
+axes.labelsize: 15
+xtick.labelsize: 13
+ytick.labelsize: 13
+legend.fontsize: 13
+
+# IMPORTANT: disable LaTeX
+text.usetex: False
+font.family: sans-serif
+
+# =========================
+# Lines
+# =========================
+lines.linewidth: 2.0
+lines.markersize: 4
+
+# =========================
+# Grid
+# =========================
+axes.grid: True
+grid.alpha: 0.3
+grid.linewidth: 0.8
+
+# =========================
+# Axes
+# =========================
+axes.linewidth: 1.0
+xtick.direction: in
+ytick.direction: in
+xtick.major.size: 4
+ytick.major.size: 4
+xtick.major.width: 1
+ytick.major.width: 1
+
+# =========================
+# Legend
+# =========================
+legend.frameon: False
