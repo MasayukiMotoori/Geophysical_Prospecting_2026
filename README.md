@@ -1,17 +1,43 @@
-# Inversion of induced polarization parameters from time-domain electromagnetic data using the Debye Decomposition model 
+# Inversion of Induced Polarization Parameters from Time-Domain Electromagnetic Data Using the Debye Decomposition Model
 
 **Masayuki Motoori¹², Lindsey J. Heagy¹, Gosuke Hoshino², Kunpei Nagase², Takumi Sato²**  
 ¹ University of British Columbia Geophysical Inversion Facility  
 ² Japan Organization for Metals and Energy Security (JOGMEC)
 
-### Abstract
+---
 
-Time-domain electromagnetics (TEM) is sensitive to variations in resistivity and chargeability, which are diagnostic physical properties of seafloor hydrothermal deposits. Several surveys using the Waseda Integrated Seafloor Time-domain EM (WISTEM) have been conducted. Negative transients, which are attributed to induced polarization (IP) effects, have been observed in data collected over a known deposit in the Okinawa Trough (2018).
+## Abstract
 
-The Cole--Cole type model is a common parameterization of complex resistivity due to IP effects; however, it implicitly assumes a wide frequency band, which is not necessarily covered by the frequency band of the TEM response from a chargeable target. We show a synthetic study that TEM inversion using the Cole--Cole model suffers from significant instability, which we attribute to the discrepancy between the model’s assumed frequency band and the frequency band of the data.
+Time-domain electromagnetics (TEM) is a valuable tool for exploring seafloor hydrothermal deposits, which are characterized by variations in resistivity and chargeability. Several surveys using the Waseda Integrated Seafloor Time-domain EM (WISTEM) system have been conducted. Negative transients, attributed to induced polarization (IP) effects, were observed in data collected over a known deposit in the Okinawa Trough (2018).
 
-The Debye Decomposition model provides a way to bridge this gap by allowing explicit selection of the relaxation time band over which the influence of chargeability in the data behaves distinctly from the influence of resistivity. In this paper, we introduce a workflow for inverting TEM data using a Debye Decomposition model. We demonstrate how to set the relaxation time band when inverting TEM data. We then compare the model recovered from the TEM data with a model recovered by inverting SIP data from the target. When inverting SIP data, we use the same Debye Decomposition model as was used for the TEM data. In this way, we tailor the frequency band to the relaxation time band, which we refer to as a reconciling process. Using a synthetic example, we demonstrate that the inversion results obtained from the TEM data are consistent with the reconciled true model obtained from the SIP response. 
+The Cole–Cole model is commonly used to parameterize complex resistivity due to IP effects. However, it implicitly assumes sensitivity to a wide range of frequencies. In practice, TEM data have limited frequency content, constrained by the measurement time range and the diffusive nature of electromagnetic fields. Using a synthetic example, we demonstrate that inversion with the Cole–Cole model can become unstable when the data do not sufficiently constrain all four parameters.
 
-We also present a field application and show that the method recovers reasonable and interpretable IP parameters for seafloor hydrothermal deposits.
+The Debye Decomposition model addresses this limitation by enabling explicit selection of a relaxation time band. This allows separation of chargeability effects from resistivity influences in the data. In this work, we present a workflow for inverting TEM data using the Debye Decomposition model, including strategies for selecting an appropriate relaxation time band.
 
-Keywords: Electromagnetics, Inversion, Data processing, Induced Polarization, Marine
+We compare inversion results from TEM data with those obtained from spectral induced polarization (SIP) data using the same Debye framework. By applying a consistent relaxation time band across both datasets, we ensure comparability of recovered IP parameters — a process we refer to as reconciliation. Synthetic examples demonstrate consistency between TEM inversion results and reconciled SIP-derived models.
+
+Finally, we present a field application showing that the method successfully recovers IP parameters consistent with expected physical properties of seafloor hydrothermal deposits.
+
+---
+
+## Keywords
+
+- Electromagnetics
+- Inversion
+- Data Processing
+- Induced Polarization
+- Marine Geophysics
+
+---
+
+## Abbreviations
+
+| Abbreviation | Meaning |
+|--------------|---------|
+| EM | Electromagnetic methods |
+| TEM | Time-domain Electromagnetics |
+| IP | Induced Polarization |
+| SIP | Spectral Induced Polarization |
+| WISTEM | Waseda Integrated Seafloor Time-domain EM |
+| ROV | Remotely Operated Vehicle |
+| CTD | Conductivity, Temperature, and Depth |
