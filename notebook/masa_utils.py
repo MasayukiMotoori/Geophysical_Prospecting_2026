@@ -216,7 +216,7 @@ class empymod_IP_simulation(BaseSimulation):
         nD=0, nlayer_fix=0, Prj_m=None, m_fix=None,
         recw=None,resmin=1e-3 , resmax=1e6, chgmin=1e-3, chgmax=0.9,
         taumin=1e-6, taumax=1e-1, cmin= 0.4, cmax=0.9,
-        taus=None, ip_model='pelton',
+        taus=None, ip_model='pelton', pertubation=0.1,
         smp_freq=None, times=None,filt_curr=None,  window_mat=None,
         ):
         if ip_model is not None and ip_model not in self.AVAILABLE_MODELS:
@@ -259,6 +259,7 @@ class empymod_IP_simulation(BaseSimulation):
         self.times = times
         self.filt_curr = filt_curr
         self.window_mat = window_mat
+        self.pertubation = pertubation
 
     def get_param(self, param, default):
         return param if param is not None else default
@@ -323,7 +324,6 @@ class empymod_IP_simulation(BaseSimulation):
         assert self.nP == 4*(nlayer_sum)
         assert self.nM == 2*nlayer
         return Prj_m, m_fix
-
 
     def deepsea_three_layers_bottom_fixed(self, 
          res_sea, res_base, bool_etas=None,
@@ -1232,8 +1232,9 @@ class empymod_IP_simulation(BaseSimulation):
     def J(self, model_vector):
         return self.Japprox(model_vector)
 
-    def Japprox(self, model_vector, perturbation=0.1, min_perturbation=1e-3):
-        delta_m = np.max([perturbation*model_vector.mean(), min_perturbation])
+    # def Japprox(self, model_vector, perturbation=0.1, min_perturbation=1e-3):
+    def Japprox(self, model_vector, min_perturbation=1e-3):
+        delta_m = np.max([self.pertubation*model_vector.mean(), min_perturbation])
         # delta_m = min_perturbation 
 #        delta_m = perturbation  
         J = []
@@ -1268,20 +1269,17 @@ class empymod_IP_simulation(BaseSimulation):
             con8 = -WdJ[:,0]
         else:
             con8 = WdJ[:,0]
-        ind = np.argmax(np.abs(con8)) # infulence and sing of con8 is the largest at this time window
-        sign_ip = -np.sign(con8[ind]) # sing of IP is estimated as the opposite of the sign of con8 sensitivity
+        ind_con8 = np.argmax(np.abs(con8)) # infulence and sing of con8 is the largest at this time window
+        sign_ip = -np.sign(con8[ind_con8]) # sing of IP is estimated as the opposite of the sign of con8 sensitivity
         threshold = threshold_ratio * np.max(np.abs(con8))
         boole_etas = np.full(self.ntau, False)
-        eta_max = 0
+        ind_max=con8.shape[0]-1
         for k in range(self.ntau):
             etak = WdJ[:, k+1]
             ind_eta = np.argmax(sign_ip*etak)
-            if ind_eta > ind:
-                if np.any ((etak[ind:]+con8[ind:]) *sign_ip > threshold):
-                    eta_max_tmp = etak[-1] *sign_ip
-                    if eta_max_tmp >= eta_max-eps:
-                        boole_etas[k] = True
-                        eta_max = eta_max_tmp
+            if ind_eta > ind_con8 and ind_eta<ind_max:
+                if np.any ((etak[ind_con8:]+con8[ind_con8:]) *sign_ip > threshold):
+                    boole_etas[k] = True
         return boole_etas
 
     def J_prd(self,J):
@@ -1884,32 +1882,72 @@ $$
         else:
             return rho0 * (1.0 -etas.sum(axis=1)+ term.sum(axis=1))  # shape: [nfreq]
 
-    def f_grad(self,p):
-        '''
-        Gradient of Debye Decomposition model in resistivity form in frequency domain.
-        p[0]        : log(res0)
-        p[1:1+ntaus]: etas 
-        \dfrac{\partial\rho(\omega)}{\partial \rho_0}= 1-\sum_{j=1}^n \eta_j+ \sum_{j=1}^n \dfrac{\eta_j}{1+(i\omega\tau_j)}}
-        \dfrac{\partial\rho(\omega)}{\partial \eta_j}= \rho_0 \left[ -1 + \dfrac{1}{1+(i\omega\tau_j)}\right]
-        '''
+    def f_grad(self, p):
+        r"""
+        Gradient of Debye decomposition model in resistivity form, frequency domain.
+
+        Parameters
+        ----------
+        p[0] : log(rho0)
+        p[1:1+self.ntau] : eta_k
+
+        Model
+        -----
+        rho(w) =
+            rho0 * [1 - sum_k eta_k * (1 - 1 / (1 + b_k))]
+
+        where
+            b_k = (1 - eta_k)^(-1/2) * (i*w*tau_k)
+
+        Derivatives
+        -----------
+        d rho / d log(rho0) = rho(w)
+
+        d rho / d eta_k =
+            -rho0 * [ (1 - 1/(1 + b_k))
+                    + eta_k * b_k' / (1 + b_k)^2 ]
+
+        where
+            b_k' = 0.5 * (1 - eta_k)^(-3/2) * (i*w*tau_k)
+        """
         assert len(p) == 1 + self.ntau, "Number of parameters must match number of taus"
-        # Initialize gradient as a complex tensor
+
         rho0 = np.exp(p[0])
-        etas = p[1:1+self.ntau]
-        etas= etas.reshape(1, -1) # shape: [1, ntau]
-        omega = 2.0 * np.pi * self.freq
-        omega = omega.reshape(-1, 1) # shape: [nfreq, 1]
-        taus = self.taus.reshape(1, -1) # shape: [1, ntau]
-        iwt = 1.0j * omega * taus # shape: [nfreq, ntau]
-        term = etas / (1.0 + iwt) # shape: [nfreq, ntau]
-        grad_rho = rho0*(1.0 - etas.sum(axis=1) + term.sum(axis=1))# shape: [nfreq]
-        grad_etas = -rho0*iwt/ (1.0 + iwt) # shape: [nfreq, ntau]
-        grad = np.concatenate((grad_rho.reshape(-1, 1), grad_etas), axis=1) # shape: [nfreq, ntau+1]
+        etas = np.asarray(p[1:1 + self.ntau], dtype=float).reshape(1, -1)   # (1, ntau)
+
+        omega = (2.0 * np.pi * self.freq).reshape(-1, 1)                    # (nfreq, 1)
+        taus = self.taus.reshape(1, -1)                                     # (1, ntau)
+        iwt = 1.0j * omega * taus                                           # (nfreq, ntau)
+
+        one_minus_eta = 1.0 - etas
+        inv_sqrt = 1.0 / np.sqrt(one_minus_eta)                             # (1, ntau)
+        inv_pow_3_2 = 1.0 / (one_minus_eta ** 1.5)                          # (1, ntau)
+
+        b = inv_sqrt * iwt                                                  # (nfreq, ntau)
+        inv = 1.0 / (1.0 + b)                                               # (nfreq, ntau)
+
+        # rho(w) = d rho / d log(rho0)
+        rho = rho0 * (
+            1.0 - np.sum(etas * (1.0 - inv), axis=1)
+        )                                                                   # (nfreq,)
+        grad_rho0 = rho.reshape(-1, 1)                                      # (nfreq, 1)
+
+        # b_k' = 0.5 * (1-eta_k)^(-3/2) * iwt
+        db_deta = 0.5 * inv_pow_3_2 * iwt                                   # (nfreq, ntau)
+
+        # d rho / d eta_k
+        grad_etas = -rho0 * (
+            (1.0 - inv) + etas * db_deta / (1.0 + b) ** 2
+        )                                                                   # (nfreq, ntau)
+
+        grad = np.concatenate((grad_rho0, grad_etas), axis=1)               # (nfreq, ntau+1)
+
         if self.con:
-            f= self.f(p) # Note f return conductivity
-            f= f.reshape(-1,1)  # reshape
-            grad *= -f**2 # C' = (1/Z)' = -Z'/Z**2 = -Z'*C**2 
-        return grad 
+            # sigma = 1 / rho
+            sigma = self.f(p).reshape(-1, 1)
+            grad *= -sigma**2
+
+        return grad
     
     def mean_log_tau(self,p):
         """
